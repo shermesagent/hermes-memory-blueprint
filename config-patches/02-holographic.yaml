@@ -1,0 +1,20 @@
+# =============================================================================
+# 02-holographic.yaml — Holographic memory store plugin
+# =============================================================================
+# Merge this under the existing "plugins:" key in config.yaml.
+# If no "plugins:" key exists, create it at the root level.
+#
+# This enables the holographic memory store, which uses Holographic Reduced
+# Representations (HRR) to encode facts as dense vectors. Benefits:
+#   - Automatic deduplication of semantically similar facts
+#   - Similarity-weighted retrieval
+#   - Compact storage (constant vector size regardless of fact count)
+#
+# Field reference:
+#   db_path    Path to the SQLite database backing the HRR store.
+#              $HERMES_HOME is auto-resolved to ~/.hermes/
+# =============================================================================
+
+plugins:
+  hermes-memory-store:
+    db_path: $HERMES_HOME/memory_store.db

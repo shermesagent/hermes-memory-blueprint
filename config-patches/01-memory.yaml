@@ -1,0 +1,24 @@
+# =============================================================================
+# 01-memory.yaml — Memory system configuration
+# =============================================================================
+# Merge this under the ROOT of config.yaml (top-level key: memory).
+#
+# Field reference:
+#   memory_enabled         Master switch. Set false to disable all memory.
+#   user_profile_enabled   Persist facts about the user across sessions.
+#   memory_char_limit      Max characters stored in agent memory (compressed).
+#   user_char_limit        Max characters stored in user profile (compressed).
+#   provider               Memory backend. "holographic" uses HRR vectors for
+#                          dense, deduplicated, similarity-aware storage.
+#   nudge_interval         Turns between ambient memory nudges (0 = off).
+#   flush_min_turns        Minimum turns before auto-flushing to persistent store.
+# =============================================================================
+
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  memory_char_limit: 2200
+  user_char_limit: 1375
+  provider: holographic
+  nudge_interval: 10
+  flush_min_turns: 6
