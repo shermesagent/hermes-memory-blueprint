@@ -11,7 +11,7 @@ feedback.
 stateDiagram-v2
     [*] --> Created: capture.py finds new fact
     Created --> Active: trust = 0.6
-    Active --> AmbientStep: -0.15 step applied
+    Active --> AmbientStep: confidence-scaled step (~-0.15 at mid)
     AmbientStep --> Idle: 30 days no interaction
     Idle --> Decaying: -0.02/week
     Decaying --> Invisible: trust < 0.3
@@ -32,11 +32,24 @@ not high enough to compete with explicitly confirmed facts.
 ### Ambient Step-Down
 
 Immediately after creation, ambient facts (those captured by `capture.py` without
-explicit user confirmation) receive a **-0.15 step** to **0.45**. This "ambient
-penalty" ensures that:
+explicit user confirmation) are stepped from 0.6 toward a **confidence-scaled target**.
+The step is centered so a mid-confidence capture (0.5) lands at **0.45** — matching the
+original fixed -0.15 penalty — while stronger and weaker captures spread proportionally:
+
+| Extraction confidence | Initial trust | Step from 0.6 |
+|-----------------------|---------------|---------------|
+| 0.70 (strong milestone) | 0.51 | -0.09 |
+| 0.65 (project fact) | 0.49 | -0.11 |
+| 0.55 (decision) | 0.47 | -0.13 |
+| 0.50 (baseline) | 0.45 | -0.15 |
+| 0.35 (weak / multi-domain) | 0.41 | -0.19 |
+
+Initial trust is bounded to [0.31, 0.6]. This "ambient band" ensures that:
 
 - Auto-captured facts are visible (above the 0.3 floor) but low-confidence.
 - User-confirmed facts (which skip the step) naturally outrank them.
+- Stronger extractions outrank weaker ones from the moment of capture, so confidence
+  is reflected in retrieval ranking rather than discarded.
 - Repeated observation (dedup promotions) can overcome the penalty.
 
 ### Decay

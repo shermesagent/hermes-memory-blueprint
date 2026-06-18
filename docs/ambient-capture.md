@@ -15,6 +15,11 @@ tends to be repetitive scaffolding. Bookend extraction catches:
 - **First 3**: Problem setup, context establishment, project identification.
 - **Last 3**: Decisions made, conclusions reached, preferences revealed.
 
+For short sessions (6 messages or fewer), the head and tail windows would overlap,
+so the tail is taken from the messages *after* the head — every message still gets
+scanned, with none counted twice. A 4-message session contributes messages 1–3 as
+the head and message 4 as the tail; the resolution is never silently dropped.
+
 ### 2. Sentence-Level Regex Scanning
 
 Each message is split into sentences. Each sentence is tested against a bank of
@@ -81,13 +86,14 @@ Before insertion, each candidate fact is checked against existing facts:
         └────────┬────────┘
                  │ No
                  ▼
-        ┌─────────────────┐
-        │ Jaccard ≥ 0.7?  │──── Yes ──► PROMOTE existing (+0.05 trust)
-        └────────┬────────┘
+        ┌──────────────────────┐
+        │ Jaccard ≥ 0.7   OR   │──── Yes ──► PROMOTE existing (+0.05 trust)
+        │ containment ≥ 0.85   │
+        └────────┬─────────────┘
                  │ No
                  ▼
         ┌─────────────────┐
-        │   New Fact       │──────────► ADD (trust 0.6, step to 0.45)
+        │   New Fact       │──────────► ADD (trust 0.6 → confidence-scaled)
         └─────────────────┘
 ```
 
@@ -101,9 +107,19 @@ J(A, B) = |A ∩ B| / |A ∪ B|
 A score ≥ 0.7 indicates a near-duplicate — the same fact observed again. Rather than
 creating a redundant entry, the existing fact's trust score is incremented by +0.05.
 
-**Default trust on creation**: 0.6, then immediately stepped down by -0.15 to 0.45 for
-ambiently captured facts. This "ambient penalty" distinguishes auto-captured facts from
-explicitly user-confirmed ones.
+**Containment guard.** Jaccard alone misses the same fact stated at different lengths
+("we chose Flash" vs. "we chose Flash for bulk routing"), because the size gap dilutes
+the score. A second test treats a candidate as a near-duplicate when one token set is
+almost entirely contained in the other (overlap ≥ 0.85 of the smaller set, with a
+minimum smaller-set size so tiny token sets can't trigger a false merge). This stops
+length-asymmetric paraphrases from accumulating as separate rows and fragmenting trust.
+
+**Default trust on creation**: 0.6, then stepped toward a **confidence-scaled target**.
+A mid-confidence capture (0.5) lands at **0.45** — identical to the previous fixed
+ambient penalty — while a strong 0.70 milestone lands near 0.51 and a weak 0.35 aside
+near 0.41, bounded to [0.31, 0.6]. Extraction confidence therefore survives into
+retrieval ranking instead of every ambient fact collapsing to a single value. This
+"ambient band" still keeps auto-captured facts below explicitly user-confirmed ones.
 
 ## Adding Custom Extraction Patterns
 

@@ -179,6 +179,42 @@ _EXPANSION_MAP: Dict[str, List[str]] = {
 
 
 # ---------------------------------------------------------------------------
+# Ambient trust constants
+#
+# New ambient facts are written at DEFAULT_TRUST then stepped toward a
+# confidence-scaled target.  A mid-confidence capture (0.5) lands at
+# AMBIENT_BASELINE_TRUST (0.45 — the documented ambient baseline), so this
+# is backward-compatible with the old fixed -0.15 step.  Stronger captures
+# land proportionally higher and weaker ones lower, bounded to
+# [AMBIENT_FLOOR_TRUST, DEFAULT_TRUST].  This keeps extraction strength
+# (a 0.70 milestone vs a 0.35 aside) alive in retrieval ranking instead of
+# flattening every ambient fact to a single value.
+# ---------------------------------------------------------------------------
+
+DEFAULT_TRUST: float = 0.6
+AMBIENT_BASELINE_TRUST: float = 0.45
+AMBIENT_FLOOR_TRUST: float = 0.31
+CONFIDENCE_TRUST_GAIN: float = 0.3  # trust per unit confidence away from 0.5
+
+
+def _ambient_target_trust(confidence: float) -> float:
+    """Map an extraction confidence to an initial ambient trust score.
+
+    Centered so a mid-confidence capture (0.5) lands at the documented
+    ambient baseline (0.45).  Stronger captures land higher, weaker ones
+    lower, clamped to [AMBIENT_FLOOR_TRUST, DEFAULT_TRUST].
+
+    Args:
+        confidence: Candidate extraction confidence (0.0–1.0).
+
+    Returns:
+        Target trust score for the new fact, rounded to 2 decimals.
+    """
+    target = AMBIENT_BASELINE_TRUST + (confidence - 0.5) * CONFIDENCE_TRUST_GAIN
+    return round(min(max(target, AMBIENT_FLOOR_TRUST), DEFAULT_TRUST), 2)
+
+
+# ---------------------------------------------------------------------------
 # Session text extraction
 # ---------------------------------------------------------------------------
 
@@ -204,11 +240,12 @@ def extract_bookends(messages: List[dict], max_first: int = 3, max_last: int = 3
         return ""
 
     first = user_asst[:max_first]
-    last = (
-        user_asst[-max_last:]
-        if len(user_asst) > max_first + max_last
-        else []
-    )
+    # Take the tail from the messages *after* the head, so short sessions
+    # (<= max_first + max_last messages) still contribute their resolution
+    # instead of being scanned head-only. tail_start guarantees no message
+    # is counted twice when head and tail would otherwise overlap.
+    tail_start = max(max_first, len(user_asst) - max_last)
+    last = user_asst[tail_start:]
 
     combined = [m["content"] for m in first]
     if last:
@@ -336,16 +373,33 @@ def extract_candidates(text: str, max_facts: int = 10) -> List[Candidate]:
 # Dedup logic
 # ---------------------------------------------------------------------------
 
-def is_near_dup(text: str, retriever, threshold: float = 0.7) -> Optional[int]:
+def is_near_dup(
+    text: str,
+    retriever,
+    threshold: float = 0.7,
+    containment: float = 0.85,
+) -> Optional[int]:
     """Check if *text* is a near-duplicate of an existing fact.
 
-    Uses Jaccard similarity on word tokens.  Returns the existing
-    fact_id if any result scores >= threshold, otherwise None.
+    Two signals, both over word-token sets returned by the retriever's
+    top-k candidates:
+
+      1. Jaccard similarity >= ``threshold`` — the classic near-dup test.
+      2. Containment — one fact's tokens are almost entirely a subset of
+         the other's.  This catches the same fact stated at different
+         lengths ("we chose Flash" vs "we chose Flash for bulk routing"),
+         where Jaccard is diluted by the size gap and would otherwise let
+         a redundant row through.  A minimum smaller-set size guards
+         against tiny token sets triggering a false merge.
+
+    Returns the existing fact_id on the first match, otherwise None.
 
     Args:
-        text:      Candidate text to check.
-        retriever: An active FactRetriever instance.
-        threshold: Jaccard similarity threshold (0.0–1.0).
+        text:        Candidate text to check.
+        retriever:   An active FactRetriever instance.
+        threshold:   Jaccard similarity threshold (0.0–1.0).
+        containment: Required overlap ratio over the smaller token set
+                     (0.0–1.0) for the containment guard.
 
     Returns:
         Existing fact_id or None.
@@ -360,8 +414,14 @@ def is_near_dup(text: str, retriever, threshold: float = 0.7) -> Optional[int]:
 
     for r in results:
         content_tokens = _tokenize(r["content"])
-        jaccard = _jaccard(query_tokens, content_tokens)
-        if jaccard >= threshold:
+        if not content_tokens:
+            continue
+        if _jaccard(query_tokens, content_tokens) >= threshold:
+            return r["fact_id"]
+        # Containment guard for length-asymmetric paraphrases.
+        overlap = len(query_tokens & content_tokens)
+        smaller = min(len(query_tokens), len(content_tokens))
+        if smaller >= 4 and overlap / smaller >= containment:
             return r["fact_id"]
 
     return None
@@ -393,8 +453,9 @@ def write_candidate(cand: Candidate, store, retriever) -> dict:
     Decision flow:
       1. Exact duplicate → skip.
       2. Near-duplicate  → promote (+0.05 trust) rather than add.
-      3. Otherwise       → add at 0.60 trust, then step down to 0.45
-                            (ambient facts start low to avoid polluting
+      3. Otherwise       → add at DEFAULT_TRUST, then step to a
+                            confidence-scaled target (mid-confidence → 0.45;
+                            ambient facts start low to avoid polluting
                             retrieval with unverified content).
 
     Args:
@@ -404,7 +465,8 @@ def write_candidate(cand: Candidate, store, retriever) -> dict:
 
     Returns:
         Dict with keys: action ('added'|'promoted'|'skipped-exact-dup'),
-        fact_id, and trust_before (previous trust, if any).
+        fact_id, trust_before (previous trust, if any), and — for added
+        facts — trust_after (the confidence-scaled initial trust).
     """
     # 1. Exact duplicate check
     existing = existing_exact(cand.text, store)
@@ -429,11 +491,21 @@ def write_candidate(cand: Candidate, store, retriever) -> dict:
             "trust_before": old_trust,
         }
 
-    # 3. New fact — add at 0.60, then step down to 0.45
+    # 3. New fact — add at DEFAULT_TRUST, then step toward a
+    #    confidence-scaled target so extraction strength survives into
+    #    retrieval ranking rather than being flattened to a fixed value.
     tags_str = ",".join(cand.tags)
     fid = store.add_fact(cand.text, category=cand.category, tags=tags_str)
-    store.update_fact(fid, trust_delta=-0.15)
-    return {"action": "added", "fact_id": fid, "trust_before": 0.6}
+    target_trust = _ambient_target_trust(cand.confidence)
+    trust_delta = round(target_trust - DEFAULT_TRUST, 2)
+    if trust_delta:
+        store.update_fact(fid, trust_delta=trust_delta)
+    return {
+        "action": "added",
+        "fact_id": fid,
+        "trust_before": DEFAULT_TRUST,
+        "trust_after": target_trust,
+    }
 
 
 def capture_from_messages(
