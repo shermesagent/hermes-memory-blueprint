@@ -35,7 +35,7 @@ state.db ◄── sweep.py (every 4h) ──► capture.py ──► dedup ─�
 ## Quick Start
 
 ```bash
-git clone https://github.com/Micah-Taylor/hermes-memory-blueprint.git
+git clone https://github.com/shermesagent/hermes-memory-blueprint.git
 cd hermes-memory-blueprint
 ./setup.sh          # interactive install
 ./setup.sh --yes    # skip confirmations
